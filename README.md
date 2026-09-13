@@ -1,3 +1,5 @@
+> 本リポジトリはsatomi1224の個人利用を想定して作成されています。予期せぬ変更や不具合が追加されることが想定されますがご容赦ください。
+
 <p align="center">
   <img src="app/AppIcon-1024.png" width="144" alt="Vox app icon">
 </p>
@@ -423,9 +425,8 @@ nix build path:.
 - [MLX Whisper](https://github.com/ml-explore/mlx-examples/blob/main/whisper/README.md)
 - [mlx-community/whisper-large-v3-turbo](https://huggingface.co/mlx-community/whisper-large-v3-turbo)
 
-## コントリビューション
-
-不具合報告や改善提案はGitHub Issuesへ、修正はPull Requestとして送ってください。変更時は可能な範囲でSwift、Python、Nixの関連テストを実行してください。
+## 連絡先
+[X(@satomi1224_poke)](https://x.com/satomi1224_poke)
 
 ## License
 

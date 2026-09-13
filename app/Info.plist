@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>ja</string>
+    <key>CFBundleDisplayName</key>
+    <string>Vox</string>
+    <key>CFBundleExecutable</key>
+    <string>Vox</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.satomi.vox</string>
+    <key>CFBundleIconFile</key>
+    <string>Vox.icns</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Vox</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.3.1</string>
+    <key>CFBundleVersion</key>
+    <string>6</string>
+    <key>CFBundleGetInfoString</key>
+    <string>Vox 0.3.1 — Local voice input powered by mlx-whisper</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSMultipleInstancesProhibited</key>
+    <true/>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>音声を文字に変換するため、マイクを使用します。</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 satomi-1224</string>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+</dict>
+</plist>

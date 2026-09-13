@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+.nix-build/
+.nix-test/
+.swiftpm/
+result
+result-*
+*.xcuserstate
+__pycache__/
+*.pyc

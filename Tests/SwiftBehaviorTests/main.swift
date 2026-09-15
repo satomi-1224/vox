@@ -1,3 +1,4 @@
+import AVFoundation
 import CoreGraphics
 import Darwin
 import Foundation
@@ -94,6 +95,50 @@ private func testModifierReleaseDoesNotLeakHeldSpace() {
 }
 
 @MainActor
+private func testAudioConversionFollowsInputFormatChanges() {
+    guard let outputFormat = AVAudioFormat(
+        commonFormat: .pcmFormatInt16,
+        sampleRate: 16_000,
+        channels: 1,
+        interleaved: true
+    ) else {
+        expect(false, "output audio format should be available")
+        return
+    }
+    let converter = AudioBufferConverter(outputFormat: outputFormat)
+
+    for sampleRate in [44_100.0, 48_000.0] {
+        guard let inputFormat = AVAudioFormat(
+            commonFormat: .pcmFormatFloat32,
+            sampleRate: sampleRate,
+            channels: 1,
+            interleaved: false
+        ), let input = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: 1_024)
+        else {
+            expect(false, "input audio buffer should be available")
+            return
+        }
+        input.frameLength = input.frameCapacity
+        if let samples = input.floatChannelData?[0] {
+            for index in 0 ..< Int(input.frameLength) {
+                samples[index] = sin(Float(index) * 0.05)
+            }
+        }
+
+        do {
+            let converted = try converter.convert(input)
+            expect(converted.frameLength > 0, "audio conversion should produce samples")
+            expect(
+                converter.inputFormat?.sampleRate == sampleRate,
+                "converter should follow the tap buffer's current sample rate"
+            )
+        } catch {
+            expect(false, "audio conversion failed: \(error.localizedDescription)")
+        }
+    }
+}
+
+@MainActor
 private func testManagedDictionaryHasPriority() {
     let settings = SettingsStore(configuration: VoxConfiguration(
         hotkey: Hotkey(keyCode: 36, modifiers: CGEventFlags.maskControl.rawValue),
@@ -128,10 +173,30 @@ private func testManagedDictionaryHasPriority() {
     )
 }
 
+@MainActor
+private func testMenuBarServiceDisablesAutomaticTermination() {
+    var calls: [String] = []
+
+    ApplicationLifecycle.keepMenuBarServiceRunning(
+        enableAutomaticTerminationSupport: { calls.append("enable support") },
+        disableAutomaticTermination: { reason in calls.append("disable: \(reason)") }
+    )
+
+    expect(
+        calls == [
+            "enable support",
+            "disable: \(ApplicationLifecycle.automaticTerminationReason)",
+        ],
+        "menu bar service should enable support before opting out of automatic termination"
+    )
+}
+
 MainActor.assumeIsolated {
     testConfiguredHotkeyAndRepeatsAreSuppressed()
     testPlainSpacePassesThrough()
     testModifierReleaseDoesNotLeakHeldSpace()
+    testAudioConversionFollowsInputFormatChanges()
     testManagedDictionaryHasPriority()
+    testMenuBarServiceDisablesAutomaticTermination()
     print("Swift behavior tests: OK")
 }

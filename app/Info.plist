@@ -38,5 +38,7 @@
     <string>Copyright © 2026 satomi-1224</string>
     <key>NSPrincipalClass</key>
     <string>NSApplication</string>
+    <key>NSSupportsAutomaticTermination</key>
+    <true/>
 </dict>
 </plist>

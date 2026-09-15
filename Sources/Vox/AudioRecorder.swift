@@ -24,16 +24,28 @@ enum AudioRecorderError: LocalizedError {
     }
 }
 
+private enum AudioBufferConversionError: LocalizedError {
+    case converterUnavailable(Double)
+    case bufferUnavailable
+    case conversionFailed
+
+    var errorDescription: String? {
+        switch self {
+        case let .converterUnavailable(sampleRate):
+            "\(sampleRate)Hzから16kHzへ変換できません"
+        case .bufferUnavailable:
+            "音声変換用バッファを作成できません"
+        case .conversionFailed:
+            "音声バッファの変換に失敗しました"
+        }
+    }
+}
+
 final class AudioRecorder {
     var onLevel: (@Sendable (Float) -> Void)?
 
-    private let engine = AVAudioEngine()
     private let lock = NSLock()
-    private var audioFile: AVAudioFile?
-    private var converter: AVAudioConverter?
-    private var outputURL: URL?
-    private var startedAt: Date?
-    private var callbackError: Error?
+    private var session: AudioRecordingSession?
 
     func requestPermission() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {
@@ -55,11 +67,15 @@ final class AudioRecorder {
     func start() throws -> URL {
         lock.lock()
         defer { lock.unlock() }
-        guard audioFile == nil else { throw AudioRecorderError.alreadyRecording }
+        guard session == nil else { throw AudioRecorderError.alreadyRecording }
 
+        // AVAudioEngine retains the I/O graph and its formats after stop(). A
+        // fresh engine prevents a device change while Vox is idle from leaving
+        // the next recording attached to a stale hardware format.
+        let engine = AVAudioEngine()
         let input = engine.inputNode
-        let format = input.outputFormat(forBus: 0)
-        guard format.channelCount > 0, format.sampleRate > 0 else {
+        let hardwareFormat = input.inputFormat(forBus: 0)
+        guard hardwareFormat.channelCount > 0, hardwareFormat.sampleRate > 0 else {
             throw AudioRecorderError.noInputDevice
         }
 
@@ -68,9 +84,7 @@ final class AudioRecorder {
             sampleRate: 16_000,
             channels: 1,
             interleaved: true
-        ), let converter = AVAudioConverter(from: format, to: targetFormat) else {
-            throw AudioRecorderError.writeFailed("16kHz PCMへの変換を初期化できません")
-        }
+        ) else { throw AudioRecorderError.writeFailed("16kHz PCMを初期化できません") }
 
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("vox-\(UUID().uuidString)")
@@ -82,14 +96,22 @@ final class AudioRecorder {
             interleaved: true
         )
 
-        callbackError = nil
-        audioFile = file
-        self.converter = converter
-        outputURL = url
-        startedAt = Date()
+        let session = AudioRecordingSession(
+            engine: engine,
+            input: input,
+            file: file,
+            targetFormat: targetFormat,
+            url: url,
+            startedAt: Date()
+        )
+        self.session = session
+        let levelHandler = onLevel
 
-        input.installTap(onBus: 0, bufferSize: 1_024, format: format) { [weak self] buffer, _ in
-            self?.consume(buffer)
+        // Let AVAudioEngine select the current input-node format. Supplying a
+        // cached format can raise an Objective-C exception (which Swift cannot
+        // catch) when the default microphone or its sample rate has changed.
+        input.installTap(onBus: 0, bufferSize: 1_024, format: nil) { [weak session] buffer, _ in
+            session?.consume(buffer, onLevel: levelHandler)
         }
 
         do {
@@ -97,10 +119,8 @@ final class AudioRecorder {
             try engine.start()
         } catch {
             input.removeTap(onBus: 0)
-            audioFile = nil
-            self.converter = nil
-            outputURL = nil
-            startedAt = nil
+            engine.stop()
+            self.session = nil
             try? FileManager.default.removeItem(at: url)
             throw error
         }
@@ -108,76 +128,85 @@ final class AudioRecorder {
     }
 
     func stop() throws -> Recording {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-
         lock.lock()
         defer { lock.unlock() }
-        guard let url = outputURL, let startedAt else { throw AudioRecorderError.notRecording }
-        let duration = Date().timeIntervalSince(startedAt)
-        audioFile = nil
-        converter = nil
-        outputURL = nil
-        self.startedAt = nil
+        guard let session else { throw AudioRecorderError.notRecording }
 
-        if let callbackError {
-            self.callbackError = nil
-            try? FileManager.default.removeItem(at: url)
-            throw AudioRecorderError.writeFailed(callbackError.localizedDescription)
+        session.input.removeTap(onBus: 0)
+        session.engine.stop()
+        self.session = nil
+
+        if let callbackErrorMessage = session.callbackErrorMessage {
+            try? FileManager.default.removeItem(at: session.url)
+            throw AudioRecorderError.writeFailed(callbackErrorMessage)
         }
-        return Recording(url: url, duration: duration)
+        return Recording(
+            url: session.url,
+            duration: Date().timeIntervalSince(session.startedAt)
+        )
     }
 
     func cancel() {
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-
         lock.lock()
-        let url = outputURL
-        audioFile = nil
-        converter = nil
-        outputURL = nil
-        startedAt = nil
-        callbackError = nil
+        guard let session else {
+            lock.unlock()
+            return
+        }
+        session.input.removeTap(onBus: 0)
+        session.engine.stop()
+        self.session = nil
         lock.unlock()
 
-        if let url { try? FileManager.default.removeItem(at: url) }
+        try? FileManager.default.removeItem(at: session.url)
+    }
+}
+
+private final class AudioRecordingSession {
+    let engine: AVAudioEngine
+    let input: AVAudioInputNode
+    let url: URL
+    let startedAt: Date
+
+    private let file: AVAudioFile
+    private let lock = NSLock()
+    private let converter: AudioBufferConverter
+    private var errorMessage: String?
+
+    init(
+        engine: AVAudioEngine,
+        input: AVAudioInputNode,
+        file: AVAudioFile,
+        targetFormat: AVAudioFormat,
+        url: URL,
+        startedAt: Date
+    ) {
+        self.engine = engine
+        self.input = input
+        self.file = file
+        converter = AudioBufferConverter(outputFormat: targetFormat)
+        self.url = url
+        self.startedAt = startedAt
     }
 
-    private func consume(_ buffer: AVAudioPCMBuffer) {
+    var callbackErrorMessage: String? {
         lock.lock()
         defer { lock.unlock() }
+        return errorMessage
+    }
 
-        if let converter {
-            let ratio = converter.outputFormat.sampleRate / converter.inputFormat.sampleRate
-            let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * ratio)) + 32
-            if let converted = AVAudioPCMBuffer(
-                pcmFormat: converter.outputFormat,
-                frameCapacity: capacity
-            ) {
-                var suppliedInput = false
-                var conversionError: NSError?
-                _ = converter.convert(to: converted, error: &conversionError) { _, status in
-                    if suppliedInput {
-                        status.pointee = .noDataNow
-                        return nil
-                    }
-                    suppliedInput = true
-                    status.pointee = .haveData
-                    return buffer
+    func consume(_ buffer: AVAudioPCMBuffer, onLevel: (@Sendable (Float) -> Void)?) {
+        lock.lock()
+        if errorMessage == nil {
+            do {
+                let converted = try converter.convert(buffer)
+                if converted.frameLength > 0 {
+                    try file.write(from: converted)
                 }
-
-                if let conversionError {
-                    callbackError = conversionError
-                } else if converted.frameLength > 0 {
-                    do {
-                        try audioFile?.write(from: converted)
-                    } catch {
-                        callbackError = error
-                    }
-                }
+            } catch {
+                errorMessage = error.localizedDescription
             }
         }
+        lock.unlock()
 
         guard let channels = buffer.floatChannelData, buffer.frameLength > 0 else { return }
         let count = Int(buffer.frameLength)
@@ -195,5 +224,75 @@ final class AudioRecorder {
         let decibels = 20 * log10(max(rms, 0.000_01))
         let normalized = min(1, max(0.04, (decibels + 52) / 48))
         onLevel?(normalized)
+    }
+}
+
+final class AudioBufferConverter {
+    let outputFormat: AVAudioFormat
+    private(set) var inputFormat: AVAudioFormat?
+
+    private var converter: AVAudioConverter?
+
+    init(outputFormat: AVAudioFormat) {
+        self.outputFormat = outputFormat
+    }
+
+    func convert(_ buffer: AVAudioPCMBuffer) throws -> AVAudioPCMBuffer {
+        let sourceFormat = buffer.format
+        if converter?.inputFormat != sourceFormat {
+            guard let replacement = AVAudioConverter(from: sourceFormat, to: outputFormat) else {
+                throw AudioBufferConversionError.converterUnavailable(sourceFormat.sampleRate)
+            }
+            converter = replacement
+            inputFormat = sourceFormat
+        }
+
+        guard let converter else {
+            throw AudioBufferConversionError.converterUnavailable(sourceFormat.sampleRate)
+        }
+        let ratio = outputFormat.sampleRate / sourceFormat.sampleRate
+        let capacity = AVAudioFrameCount(ceil(Double(buffer.frameLength) * ratio)) + 32
+        guard let converted = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: capacity
+        ) else {
+            throw AudioBufferConversionError.bufferUnavailable
+        }
+
+        let inputProvider = AudioConverterInput(buffer: buffer)
+        var conversionError: NSError?
+        let status = converter.convert(to: converted, error: &conversionError) { _, inputStatus in
+            inputProvider.next(status: inputStatus)
+        }
+
+        if let conversionError {
+            throw conversionError
+        }
+        if status == .error {
+            throw AudioBufferConversionError.conversionFailed
+        }
+        return converted
+    }
+}
+
+private final class AudioConverterInput: @unchecked Sendable {
+    private let buffer: AVAudioPCMBuffer
+    private let lock = NSLock()
+    private var wasSupplied = false
+
+    init(buffer: AVAudioPCMBuffer) {
+        self.buffer = buffer
+    }
+
+    func next(status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !wasSupplied else {
+            status.pointee = .noDataNow
+            return nil
+        }
+        wasSupplied = true
+        status.pointee = .haveData
+        return buffer
     }
 }
